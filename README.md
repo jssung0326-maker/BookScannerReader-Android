@@ -1,41 +1,50 @@
-# BookScannerReader-Android v1.0-alpha
+# BookScannerReader-Android v1.1-alpha
 
-iPhone용 BookScannerReader v1.0의 기능 구조를 Android로 이식한 첫 테스트 버전입니다.
+Galaxy Note8 실제 카메라 테스트를 바탕으로 **책 전용 스캐너 촬영 화면**을 강화한 버전입니다.
 
-## 목표 기기
-- Samsung Galaxy Note8
-- minSdk 23
-- Kotlin + Jetpack Compose + CameraX + ML Kit
+## v1.1-alpha 핵심 변경
 
-## 현재 포함
+### 1. 카메라 진입 시 좌/우 페이지 외곽선 자동 지정
+- CameraX `ImageAnalysis`로 실시간 프레임 분석
+- 화면의 밝은 종이 영역을 이용해 왼쪽/오른쪽 페이지 후보를 자동 탐지
+- 두 개의 초록 외곽선을 카메라 미리보기 위에 표시
+- 페이지 외부는 반투명하게 어둡게 표시해 일반 카메라와 스캐너 화면을 구분
+- 가운데 제본선 표시
+
+### 2. 수동 미세 조정
+- 외곽선의 흰색 네 꼭짓점을 손가락으로 드래그
+- 사용자가 한 번 조정하면 자동 추적이 잠시 멈춤
+- `자동 재탐지`를 누르면 다시 자동 외곽선 탐지
+
+### 3. 실제 외곽선 기준 저장
+- 전체 사진을 그대로 저장하지 않음
+- 좌/우 외곽선의 네 점 기준으로 각각 Perspective Crop
+- 각 페이지를 지정 규격으로 정규화
+- OCR 및 PDF 생성
+
+### 4. 같은 페이지를 다시 촬영하면 최신 촬영본으로 교체
+- OCR 텍스트 유사도 + 이미지 perceptual hash를 함께 검사
+- 동일 페이지로 판단되면 페이지를 추가하지 않고 기존 페이지 파일을 최신 촬영본으로 덮어씀
+- 메모/북마크/페이지 순서는 유지
+- 사용자의 요구에 따라 품질 점수와 관계없이 나중에 촬영한 것이 우선
+
+## 기존 기능 유지
 - 1페이지 / 펼친 2페이지 촬영
-- 2페이지 좌우 분리 및 분리 위치 조절
-- 기준 출력 크기 정규화
-- 품질 점수
-- 중복 페이지 감지
-- 이어 스캔
+- 페이지 크기 정규화
+- 촬영 품질 점수
 - 한글 OCR
-- 이미지 PDF 생성
+- PDF 생성
 - OCR 본문 검색
 - 북마크 / 메모
-- Android TTS 읽어주기
+- TTS 읽어주기
+- 이어 스캔
 - 책별 로컬 저장
 
-## iOS v1.0과 차이
-- iOS VisionKit/Vision/PDFKit/TTS는 Android CameraX/ML Kit/PdfDocument/TTS로 교체했습니다.
-- 제본선 자동검출, 고급 원근 보정, 곡면 보정, 페이지 안정 자동촬영은 실제 Note8 촬영 샘플로 튜닝한 뒤 다음 버전에서 강화합니다.
-- 검색 가능한 PDF의 invisible OCR text layer는 현재 앱 내부 OCR 검색으로 대체합니다.
+## 중요
+자동 외곽선 탐지는 Galaxy Note8 실기기에서 추가 튜닝이 필요한 alpha 기능입니다.
+책과 배경의 명암 차이가 클수록 더 정확합니다.
 
-## 실행
-1. Windows에 Android Studio 설치
-2. 이 폴더를 Open
-3. Gradle Sync 완료
-4. Note8: 설정 > 휴대전화 정보 > 소프트웨어 정보 > 빌드번호 7회 탭
-5. 개발자 옵션 > USB 디버깅 ON
-6. USB 연결 후 PC 허용
-7. Android Studio 상단에서 Note8 선택
-8. Run ▶
-
-## GitHub
-새 저장소 이름 권장: `BookScannerReader-Android`
-기존 iOS `BookScannerReader` 저장소는 그대로 유지하세요.
+## Android Studio
+- Gradle JDK: 17 권장
+- Java/Kotlin JVM target: 17로 설정됨
+- 목표 기기: Samsung Galaxy Note8 (SM-N950N)

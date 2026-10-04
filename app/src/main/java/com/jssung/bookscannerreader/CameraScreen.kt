@@ -1,5 +1,6 @@
 package com.jssung.bookscannerreader
-import android.graphics.BitmapFactory
+
+import android.graphics.Bitmap
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -13,14 +14,252 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.Executors
 
-@Composable fun CameraScreen(book:BookRecord,store:LibraryStore,onDone:()->Unit){
- val ctx=LocalContext.current; val scope=rememberCoroutineScope(); var capture by remember{mutableStateOf<ImageCapture?>(null)}; var status by remember{mutableStateOf("카메라 준비 중")}; var split by remember{mutableFloatStateOf(book.profile.splitRatio)}
- Column(Modifier.fillMaxSize()){
-  AndroidView(modifier=Modifier.weight(1f).fillMaxWidth(),factory={c-> val v=PreviewView(c); val f=ProcessCameraProvider.getInstance(c); f.addListener({val p=f.get();val pr=Preview.Builder().build().also{it.setSurfaceProvider(v.surfaceProvider)}; val ic=ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build();capture=ic;p.unbindAll();p.bindToLifecycle(c as androidx.lifecycle.LifecycleOwner,CameraSelector.DEFAULT_BACK_CAMERA,pr,ic);status="촬영 준비 완료"},ContextCompat.getMainExecutor(c));v})
-  if(book.profile.scanMode==ScanMode.SPREAD){Text("2페이지 분리선 ${(split*100).toInt()}%");Slider(value=split,onValueChange={split=it},valueRange=.35f..65f/100f)}
-  Text(status,Modifier.padding(8.dp)); Row(Modifier.fillMaxWidth().padding(8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-   Button(modifier=Modifier.weight(1f),onClick={val ic=capture?:return@Button;val raw=File(ctx.cacheDir,"raw_${System.currentTimeMillis()}.jpg");val opt=ImageCapture.OutputFileOptions.Builder(raw).build();ic.takePicture(opt,ContextCompat.getMainExecutor(ctx),object:ImageCapture.OnImageSavedCallback{override fun onImageSaved(r:ImageCapture.OutputFileResults){scope.launch{val bm=BitmapFactory.decodeFile(raw.absolutePath);val parts=if(book.profile.scanMode==ScanMode.SPREAD){val q=ImageProcessing.splitSpread(bm,split);if(book.profile.readingDirection==ReadingDirection.LEFT_TO_RIGHT)listOf(q.first,q.second)else listOf(q.second,q.first)}else listOf(bm);parts.forEach{part->val n=ImageProcessing.normalize(part,book.profile.targetWidth,book.profile.targetHeight);val score=ImageProcessing.qualityScore(n);val last=book.pages.lastOrNull();if(last!=null){val prev=BitmapFactory.decodeFile(last.imagePath);if(prev!=null&&ImageProcessing.hamming(ImageProcessing.hash(prev),ImageProcessing.hash(n))<=4){status="중복 페이지 제외";return@forEach}};val dir=File(ctx.filesDir,"books/${book.id}/pages").apply{mkdirs()};val out=File(dir,"page_${book.pages.size+1}.jpg");out.outputStream().use{n.compress(android.graphics.Bitmap.CompressFormat.JPEG,92,it)};val text=runCatching{OcrService.recognize(n)}.getOrDefault("");book.pages.add(PageRecord(index=book.pages.size,imagePath=out.absolutePath,ocrText=text,qualityScore=score))};store.save();runCatching{PdfService.createPdf(ctx,book)};status="${book.pages.size}페이지 저장 완료"}};override fun onError(e:ImageCaptureException){status="촬영 오류: ${e.message}"}})} ){Text("촬영")}; OutlinedButton(onClick=onDone){Text("완료")}
-  }
- }
+@Composable
+fun CameraScreen(
+    book: BookRecord,
+    store: LibraryStore,
+    onDone: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
+
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var overlayView by remember { mutableStateOf<PageDetectionOverlayView?>(null) }
+    var status by remember { mutableStateOf("카메라 준비 중") }
+    var autoMode by remember { mutableStateOf(true) }
+
+    DisposableEffect(Unit) {
+        onDispose { analyzerExecutor.shutdown() }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    PreviewView(ctx).apply {
+                        scaleType = PreviewView.ScaleType.FIT_CENTER
+                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+
+                        val providerFuture = ProcessCameraProvider.getInstance(ctx)
+                        providerFuture.addListener({
+                            val provider = providerFuture.get()
+
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(surfaceProvider)
+                            }
+
+                            val capture = ImageCapture.Builder()
+                                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                                .build()
+                            imageCapture = capture
+
+                            val analysis = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build()
+
+                            analysis.setAnalyzer(analyzerExecutor) { image ->
+                                try {
+                                    if (autoMode) {
+                                        val detected = AutoPageDetector.detect(image)
+                                        if (detected != null) {
+                                            post {
+                                                overlayView?.updateDetection(
+                                                    detected.left,
+                                                    detected.right
+                                                )
+                                            }
+                                        }
+                                    }
+                                } finally {
+                                    image.close()
+                                }
+                            }
+
+                            provider.unbindAll()
+                            provider.bindToLifecycle(
+                                ctx as androidx.lifecycle.LifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                capture,
+                                analysis
+                            )
+                            status = "책 외곽 자동 인식 중"
+                        }, ContextCompat.getMainExecutor(ctx))
+                    }
+                }
+            )
+
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    PageDetectionOverlayView(ctx).also {
+                        overlayView = it
+                    }
+                }
+            )
+        }
+
+        Text(
+            "초록 외곽선 = 저장될 페이지 · 흰 점을 끌면 수동 보정",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+        )
+
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = autoMode,
+                onClick = {
+                    autoMode = !autoMode
+                    if (autoMode) overlayView?.resetAuto()
+                },
+                label = { Text(if (autoMode) "자동 외곽선 ON" else "수동 외곽선") }
+            )
+
+            OutlinedButton(
+                onClick = {
+                    autoMode = true
+                    overlayView?.resetAuto()
+                    status = "외곽선 다시 탐색 중"
+                }
+            ) {
+                Text("자동 재탐지")
+            }
+        }
+
+        Text(status, Modifier.padding(8.dp))
+
+        Row(
+            Modifier.fillMaxWidth().padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    val capture = imageCapture ?: return@Button
+                    val geometry = overlayView?.snapshot() ?: return@Button
+                    val raw = File(context.cacheDir, "raw_${System.currentTimeMillis()}.jpg")
+                    val options = ImageCapture.OutputFileOptions.Builder(raw).build()
+
+                    capture.takePicture(
+                        options,
+                        ContextCompat.getMainExecutor(context),
+                        object : ImageCapture.OnImageSavedCallback {
+                            override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                                scope.launch {
+                                    status = "좌·우 페이지 처리 중..."
+                                    val full = ImageProcessing.decodeOriented(raw)
+                                    if (full == null) {
+                                        status = "사진을 읽지 못했습니다."
+                                        return@launch
+                                    }
+
+                                    val quads = if (book.profile.scanMode == ScanMode.SPREAD) {
+                                        if (book.profile.readingDirection == ReadingDirection.LEFT_TO_RIGHT)
+                                            listOf(geometry.first, geometry.second)
+                                        else listOf(geometry.second, geometry.first)
+                                    } else {
+                                        // 1페이지 모드에서는 더 큰 쪽 프레임을 사용
+                                        listOf(geometry.first)
+                                    }
+
+                                    var replaced = 0
+                                    var added = 0
+
+                                    quads.forEach { quad ->
+                                        val cropped = runCatching {
+                                            ImageProcessing.perspectiveCrop(full, quad)
+                                        }.getOrElse {
+                                            status = "페이지 외곽 보정 실패"
+                                            return@forEach
+                                        }
+
+                                        val normalized = ImageProcessing.normalize(
+                                            cropped,
+                                            book.profile.targetWidth,
+                                            book.profile.targetHeight
+                                        )
+
+                                        val quality = ImageProcessing.qualityScore(normalized)
+                                        val text = runCatching {
+                                            OcrService.recognize(normalized)
+                                        }.getOrDefault("")
+
+                                        val duplicate = DuplicateDetector.findDuplicate(
+                                            book = book,
+                                            newText = text,
+                                            newBitmap = normalized
+                                        )
+
+                                        if (duplicate != null) {
+                                            // 사용자의 요구: 같은 페이지는 나중 촬영본으로 무조건 교체
+                                            val out = File(duplicate.imagePath)
+                                            out.parentFile?.mkdirs()
+                                            out.outputStream().use {
+                                                normalized.compress(Bitmap.CompressFormat.JPEG, 94, it)
+                                            }
+                                            duplicate.ocrText = text
+                                            duplicate.qualityScore = quality
+                                            replaced++
+                                        } else {
+                                            val dir = File(
+                                                context.filesDir,
+                                                "books/${book.id}/pages"
+                                            ).apply { mkdirs() }
+
+                                            val out = File(
+                                                dir,
+                                                "page_${System.currentTimeMillis()}_${book.pages.size + 1}.jpg"
+                                            )
+                                            out.outputStream().use {
+                                                normalized.compress(Bitmap.CompressFormat.JPEG, 94, it)
+                                            }
+
+                                            book.pages.add(
+                                                PageRecord(
+                                                    index = book.pages.size,
+                                                    imagePath = out.absolutePath,
+                                                    ocrText = text,
+                                                    qualityScore = quality
+                                                )
+                                            )
+                                            added++
+                                        }
+                                    }
+
+                                    book.pages.sortedBy { it.index }.forEachIndexed { i, p ->
+                                        p.index = i
+                                    }
+
+                                    store.save()
+                                    runCatching { PdfService.createPdf(context, book) }
+
+                                    status = buildString {
+                                        append("${book.pages.size}페이지 저장")
+                                        if (added > 0) append(" · 새 페이지 ${added}장")
+                                        if (replaced > 0) append(" · 중복 ${replaced}장 최신 촬영본으로 교체")
+                                    }
+                                }
+                            }
+
+                            override fun onError(exc: ImageCaptureException) {
+                                status = "촬영 오류: ${exc.message}"
+                            }
+                        }
+                    )
+                }
+            ) {
+                Text("스캔 촬영")
+            }
+
+            OutlinedButton(onClick = onDone) {
+                Text("완료")
+            }
+        }
+    }
 }
